@@ -112,6 +112,8 @@ use kube::{
 use kube_runtime::{utils::try_flatten_applied, watcher};
 use kube_derive::{CustomResource};
 
+mod xpathable;
+
 mod providers;
 mod program_config;
 
