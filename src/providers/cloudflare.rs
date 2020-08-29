@@ -1,8 +1,9 @@
 use anyhow::anyhow;
 use serde::{Serialize, Deserialize};
-use serde_json::{Value, from_value};
+use serde_json::value::{Value, Index, from_value};
 use super::util::{ProviderBackend, SubDomainName, FullDomainName, ZoneDomainName, Record};
 use crate::reqwest_client_builder;
+use crate::xpathable::XPathable;
 
 use std::convert::{TryFrom, TryInto};
 
@@ -63,12 +64,7 @@ impl ProviderBackend for CloudFlareConfig {
             .send().await?
             .json().await?;
         let zone_id = result
-            .get("result")
-            .ok_or(anyhow!("Missing key: result"))?
-            .get(0)
-            .ok_or(anyhow!("Missing index: result.0"))?
-            .get("id")
-            .ok_or(anyhow!("Missing key: result.0.id"))?
+            .xpath("/result/0/id")?
             .as_str()
             .ok_or(anyhow!("Unable to convert zone ID to string"))?;
 
@@ -79,41 +75,33 @@ impl ProviderBackend for CloudFlareConfig {
             .json().await?;
 
         let record_count = result
-            .get("result_info")
-            .ok_or(anyhow!("Missing key: result_info"))?
-            .get("count")
-            .ok_or(anyhow!("Missing key: result_info.count"))?
+            .xpath("/result_info/count")?
             .as_u64()
             .ok_or(anyhow!("Unable to convert result_info.count to u64"))?;
 
         let mut records: Vec<Record> = Vec::with_capacity(record_count as usize);
         // TODO: implement pagination
-        
+
         for record in result
-                .get("result")
-                .ok_or(anyhow!("Missing key: result"))?
+                .xpath("/result")?
                 .as_array()
                 .ok_or(anyhow!("Unable to convert result to array"))? {
+            // try xpath impl
             records.push(Record::new(
                 record
-                    .get("name")
-                    .ok_or(anyhow!("Missing record[].name"))?
+                    .xpath("/name")?
                     .as_str()
                     .ok_or(anyhow!("Unable to convert record[].name to str"))?.into(),
                 record
-                    .get("ttl")
-                    .ok_or(anyhow!("Missing record[].ttl"))?
+                    .xpath("/ttl")?
                     .as_u64()
                     .ok_or(anyhow!("Unable to convert result to u64"))?,
-                from_value(record
-                    .get("type")
-                    .ok_or(anyhow!("Missing record[].type"))?.clone())?,
+                from_value(record.xpath("/type")?.clone())?,
                 record
-                    .get("content")
-                    .ok_or(anyhow!("Missing record[].content"))?
+                    .xpath("/content")?
                     .as_str()
                     .ok_or(anyhow!("Unable to convert record[].content to str"))?.into()
-                    ))
+                    ));
         }
 
         Ok(records)
