@@ -1,6 +1,8 @@
 use anyhow::anyhow;
 use serde::{Serialize, Deserialize};
 use serde_json::value::{Value, Index, from_value};
+use reqwest::header;
+
 use super::util::{ProviderBackend, SubDomainName, FullDomainName, ZoneDomainName, Record};
 use crate::reqwest_client_builder;
 use crate::xpathable::XPathable;
@@ -26,7 +28,6 @@ pub enum CloudFlareConfig {
 
 macro_rules! client_builder {
     (auth::bearer(auth_token => $token:expr)) => ({
-        use reqwest::header;
         let mut headers = header::HeaderMap::new();
         headers.insert(header::AUTHORIZATION,
                        header::HeaderValue::from_str(format!("Bearer {}", $token).as_str())?);
@@ -34,9 +35,11 @@ macro_rules! client_builder {
     });
     (auth::key(auth_email => $email:expr, auth_key => $key:expr)) => ({
         use reqwest::headers;
-        let mut headers = headers::HeaderMap::new();
-        headers.insert(header::AUTHORIZATION,
-                       concat!("Bearer ", $token))
+        let mut headers = header::HeaderMap::new();
+        let x_auth_email = header::HeaderName::from_static("x-auth-email");
+        let x_auth_key = header::HeaderName::from_static("x-auth-key");
+        headers.insert(x_auth_email, auth_email);
+        headers.insert(x_auth_key, auth_key);
         reqwest_client_builder!().default_headers(headers)
     });
 }
