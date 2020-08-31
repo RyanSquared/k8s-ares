@@ -88,19 +88,14 @@ pub mod util {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug)]
-#[serde(tag="provider", content="providerOptions")]
-pub enum ProviderConfig {
-    #[serde(rename="cloudflare")]
-    CloudFlare(cloudflare::CloudFlareConfig),
-}
+use util::ProviderBackend;
+use cloudflare::CloudFlareConfig as CloudFlare;
 
-impl ProviderConfig {
-    pub fn get_backend_as_trait(&self) -> &dyn util::ProviderBackend {
-        match self {
-            ProviderConfig::CloudFlare(config) => {
-                config as &dyn util::ProviderBackend
-            }
-        }
+trait_enum::trait_enum! {
+    #[derive(Serialize, Deserialize, Debug)]
+    #[serde(tag="provider", content="providerOptions")]
+    pub enum ProviderConfig: ProviderBackend {
+        #[serde(rename="cloudflare")]
+        CloudFlare,
     }
 }

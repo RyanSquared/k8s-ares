@@ -94,6 +94,8 @@
 // }}}
 
 // imports {{{
+use std::ops::Deref;
+
 use clap::Clap;
 
 use slog::{
@@ -169,7 +171,7 @@ async fn main() -> anyhow::Result<()> {
 
     // normally, we'd have a watcher over a CRD, but we're just gonna oneshot the match
     for backend in config {
-        let provider: &dyn ProviderBackend = backend.provider.get_backend_as_trait();
+        let provider: &dyn ProviderBackend = backend.provider.deref();
 
         for selector in &backend.selector {
             info!(root_logger, "found selector"; o!("selector" => selector));
