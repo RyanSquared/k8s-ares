@@ -34,12 +34,11 @@ macro_rules! client_builder {
         reqwest_client_builder!().default_headers(headers)
     });
     (auth::key(auth_email => $email:expr, auth_key => $key:expr)) => ({
-        use reqwest::headers;
         let mut headers = header::HeaderMap::new();
         let x_auth_email = header::HeaderName::from_static("x-auth-email");
         let x_auth_key = header::HeaderName::from_static("x-auth-key");
-        headers.insert(x_auth_email, auth_email);
-        headers.insert(x_auth_key, auth_key);
+        headers.insert(x_auth_email, header::HeaderValue::from_str($email.as_str())?);
+        headers.insert(x_auth_key, header::HeaderValue::from_str($key.as_str())?);
         reqwest_client_builder!().default_headers(headers)
     });
 }
@@ -50,8 +49,8 @@ impl CloudFlareConfig {
             CloudFlareConfig::Token { api_token } => {
                 Ok(client_builder!(auth::bearer(auth_token => api_token)).build()?)
             },
-            CloudFlareConfig::EmailKey { api_key, email } => {
-                unimplemented!("not yet!");
+            CloudFlareConfig::EmailKey { email, api_key } => {
+                Ok(client_builder!(auth::key(auth_email => email, auth_key => api_key)).build()?)
             }
         }
     }
