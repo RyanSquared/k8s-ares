@@ -140,7 +140,7 @@ impl RecordValueCollector for PodSelector {
                 for expr in match_expressions {
                         let value = pod_labels.get(&expr.key);
                         // invalid match, we don't want this pod; by the Kubernetes spec, we only
-                        // want things that match BOTH all values AND all 
+                        // want things that match BOTH all values AND all expressions.
                         if !expr.match_value(value) {
                             continue 'outer;
                         }
