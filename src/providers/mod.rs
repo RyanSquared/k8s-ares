@@ -14,7 +14,7 @@ pub mod util {
     pub type FullDomainName = String;
     pub type SubDomainName = String;
 
-    #[derive(Serialize, Deserialize, Debug)]
+    #[derive(Serialize, Deserialize, Clone, Debug)]
     pub enum RecordType {
         // Standard
         A,
@@ -45,7 +45,7 @@ pub mod util {
         pub value: String,
     }
 
-    #[derive(Serialize, Deserialize, Debug)]
+    #[derive(Serialize, Deserialize, Clone, Debug)]
     pub struct RecordBuilder {
         pub fqdn: FullDomainName,
         pub zone: ZoneDomainName,
@@ -65,6 +65,18 @@ pub mod util {
                 value: value,
             }
         }
+
+        pub fn builder(fqdn: FullDomainName,
+                       zone: ZoneDomainName,
+                       record_type: RecordType) -> RecordBuilder {
+            RecordBuilder {
+                fqdn: fqdn,
+                zone: zone,
+                record_type: record_type,
+                ttl: None,
+                value: None,
+            }
+        }
     }
 
     impl RecordBuilder {
@@ -78,10 +90,14 @@ pub mod util {
             self
         }
 
-        pub fn build(&self) -> Result<Record> {
+        pub fn try_build(self) -> Result<Record> {
             let ttl = self.ttl.ok_or(anyhow!("Missing TTL"))?;
             let value = self.value.ok_or(anyhow!("Missing value"))?;
-            Ok(Record::new(self.zone, self.fqdn, ttl, self.record_type, value))
+            Ok(Record::new(self.zone,
+                           self.fqdn,
+                           ttl,
+                           self.record_type,
+                           value))
         }
     }
 
@@ -101,7 +117,7 @@ pub mod util {
 
     /// Generic trait for getting, setting, and deleting DNS records.
     #[async_trait::async_trait]
-    pub trait ProviderBackend {
+    pub trait ProviderBackend: Send {
         /// Get a deployed record from the backend service.
         async fn get_records(&self, domain: &ZoneDomainName, name: &SubDomainName) ->
                 anyhow::Result<Vec<Record>>;

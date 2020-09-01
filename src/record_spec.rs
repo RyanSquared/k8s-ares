@@ -12,7 +12,7 @@ use anyhow::{anyhow, Result};
 use k8s_openapi::api::core::v1::{Pod, Node};
 use futures::{StreamExt, TryStreamExt};
 use kube::{
-    api::{Api, ListParams, WatchEvent},
+    api::{Api, ListParams, WatchEvent, ObjectMeta},
     Client,
 };
 use kube_derive::CustomResource;
@@ -87,9 +87,18 @@ pub trait RecordValueCollector {
         ListParams::default()
     }
 
-    async fn get_values(&self, opts: &Opts) -> Result<Vec<String>>;
+    /// Return the values that should be records for a RecordValueCollector. The ObjectMeta
+    /// passed to the function should be the ObjectMeta of the Record. This is so namespaced
+    /// attributes have an object with which to tie their reference.
 
-    async fn on_value_change(&self, opts: &Opts, provider_config: &mut ProviderConfig,
+    async fn get_values(&self, meta: &ObjectMeta) -> Result<Vec<String>>;
+
+    /// Ensure by watching relevant objects (such as Pods) have a Record for every instance, and
+    /// that if an object no longer has a connection to the relevant record (such as a Pod no
+    /// longer existing on a Node) that the Record is removed. The ObjectMeta passed to the
+    /// function should be the ObjectMeta of the Record. This is so namespaced attributes have an
+    /// object with which to tie their reference.
+    async fn on_value_change(&self, meta: &ObjectMeta, provider_config: &mut ProviderConfig,
                              record_builder: &mut RecordBuilder) -> Result<()>;
 }
 
@@ -104,7 +113,7 @@ pub struct PodSelector {
 #[async_trait::async_trait]
 impl RecordValueCollector for PodSelector {
     fn get_list_parameters(&self) -> ListParams {
-        let mut list_params = RecordValueCollector::get_list_parameters(self);
+        let mut list_params = ListParams::default();
         if let Some(match_labels) = &self.match_labels {
             for (label, value) in match_labels {
                 list_params = list_params.labels(format!("{}={}", label, value).as_str());
@@ -119,11 +128,15 @@ impl RecordValueCollector for PodSelector {
     ///
     /// Command line configuration:
     /// - --pod-namespace: Namespace to look for Pods
-    async fn get_values(&self, opts: &Opts) -> Result<Vec<String>> {
+    async fn get_values(&self, meta: &ObjectMeta) -> Result<Vec<String>> {
         let list_params = self.get_list_parameters();
 
         let pods: Api<Pod> = Api::namespaced(Client::try_default().await?,
-                                             opts.pod_namespace.as_str());
+                                             meta
+                                                .namespace
+                                                .as_ref()
+                                                .ok_or(anyhow!("Missing meta.namespace"))?
+                                                .as_str());
         let nodes: Api<Node> = Api::all(Client::try_default().await?);
 
         let pod_list = pods.list(&list_params).await?;
@@ -175,12 +188,12 @@ impl RecordValueCollector for PodSelector {
 
     /// Watch over changes to all Pods to determine whether or not a new IP address has been
     /// added or whether an old IP address no longer hosts an instance of the pod.
-    async fn on_value_change(&self, opts: &Opts, provider_config: &mut ProviderConfig,
+    async fn on_value_change(&self, meta: &ObjectMeta, provider_config: &mut ProviderConfig,
                             record_builder: &mut RecordBuilder) -> Result<()> {
         // TODO: async watcher over PodSelector, call f() every time a new Node is added or an
         // old Node is removed.
         let list_params = self.get_list_parameters();
-        let mut current_values = self.get_values(opts).await?;
+        let mut current_values = self.get_values(meta).await?;
         current_values.sort();
         let pods: Api<Pod> = Api::all(Client::try_default().await?);
         let mut stream = pods.watch(&list_params, "0").await?.boxed();
@@ -194,12 +207,10 @@ impl RecordValueCollector for PodSelector {
                     // exist on the same machine. If we were to indiscriminantly remove the IP
                     // address, this could lead to moving from two Pods to one, but the IP still
                     // being removed.
-                    let mut new_values = self.get_values(&opts).await?;
+                    let mut new_values = self.get_values(&meta).await?;
                     new_values.sort();
-                    let max = std::cmp::max(current_values.len(), new_values.len());
-                    let current = 0;
                     let (mut left_index, mut right_index) = (0, 0);
-                    while current < max {
+                    loop {
                         // Check if old_values differs from new_values. If new_values does not
                         // contain the value at the current index, it was removed. If old_values
                         // does not contain the value at the current index, it was added.
@@ -258,7 +269,8 @@ impl RecordValueCollector for PodSelector {
                                     let record = record_builder
                                         .value(new_value)
                                         .ttl(5) // ::TODO:: custom TTL
-                                        .build()?;
+                                        .clone()
+                                        .try_build()?;
                                     provider.add_record(&record.zone, &record).await?;
                                 },
                                 RecordChange::Remove(value) => {
@@ -266,7 +278,8 @@ impl RecordValueCollector for PodSelector {
                                     let record = record_builder
                                         .value(new_value)
                                         .ttl(5) // ::TODO:: custom TTL
-                                        .build()?;
+                                        .clone()
+                                        .try_build()?;
                                     provider.delete_record(&record.zone, &record).await?;
                                 }
                             }
@@ -285,9 +298,8 @@ impl RecordValueCollector for PodSelector {
                     return Err(e.into())
                 }
             }
-            dbg!(pod_status);
         }
-        Err(anyhow!("test"))
+        Err(anyhow!("For some reason, we're not watching over Pods anymore."))
     }
 }
 
@@ -302,11 +314,11 @@ trait_enum::trait_enum! {
 #[derive(CustomResource, Clone, Deserialize, Serialize, Debug)]
 #[kube(group="syntixi.io", version="v1alpha1", namespaced)]
 pub struct RecordSpec {
-    fqdn: String,
-    ttl: u32,
+    pub fqdn: String,
+    pub ttl: u32,
     #[serde(rename = "type")]
-    type_: String,
-    value: Option<Vec<String>>,
+    pub type_: String,
+    pub value: Option<Vec<String>>,
     #[serde(rename = "valueFrom")]
     pub value_from: Option<RecordValueFrom>,
 }

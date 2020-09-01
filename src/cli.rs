@@ -17,9 +17,4 @@ pub struct Opts {
     #[clap(default_value="default")]
     #[clap(help="Namespace where the Secret is stored.")]
     pub secret_namespace: String,
-
-    #[clap(long, env="POD_NAMESPACE")]
-    #[clap(default_value="default")]
-    #[clap(help="Namespace where Pods are stored for PodSelectors")]
-    pub pod_namespace: String,
 }

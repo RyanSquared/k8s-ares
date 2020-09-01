@@ -123,7 +123,8 @@ mod program_config;
 mod record_spec;
 
 use program_config::AresConfig;
-use providers::{ProviderConfig, util::{ProviderBackend, ZoneDomainName}};
+use providers::{ProviderConfig, util::{ProviderBackend, ZoneDomainName,
+                                       RecordType, Record as RecordObject}};
 use record_spec::{Record, RecordValueCollector};
 // }}}
 
@@ -152,15 +153,18 @@ async fn main() -> anyhow::Result<()> {
         .ok_or(anyhow!("Unable to get key from Secret"))?
         .clone().0;
 
-    let config: Vec<AresConfig> = serde_yaml::from_str(std::str::from_utf8(&config_content[..])?)?;
+    let mut config: Vec<AresConfig> = serde_yaml::from_str(std::str::from_utf8(&config_content[..])?)?;
 
     { // Testing RecordSpec
-        let records: Api<Record> = Api::namespaced(Client::try_default().await?, "default");
-        let record = records.get("test").await?;
-        if let Some(collector_obj) = record.spec.value_from {
+        let records: Api<Record> = Api::all(Client::try_default().await?);
+        let list = records.list(&ListParams::default()).await?;
+        let record = list.iter().next().unwrap();
+        if let Some(collector_obj) = &record.spec.value_from {
             let collector = collector_obj.deref();
-            let ips = collector.get_values(&opts).await?;
-            dbg!(&ips);
+            let zone = String::from("syntixi.io");
+            let mut config = config.remove(0).provider;
+            let mut builder = RecordObject::builder(record.spec.fqdn.clone(), zone, RecordType::A);
+            collector.on_value_change(&record.metadata, &mut config, &mut builder).await?;
         }
     }
 
