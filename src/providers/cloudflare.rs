@@ -1,3 +1,40 @@
+// vim:set foldmethod=marker:
+
+// starting doc {{{
+//! A CloudFlare provider for ARES deployments.
+//!
+//! Configuration example:
+//!
+//! ```yaml
+//! apiVersion: v1
+//! kind: Secret
+//! metadata:
+//!   name: ares-secret
+//! stringData:
+//!   ares.yaml: |-
+//!     - selector:
+//!       - ***
+//!       provider: cloudflare
+//!       providerConfig:
+//!         apiToken: ***
+//! ---
+//! apiVersion: v1
+//! kind: Secret
+//! metadata:
+//!   name: ares-secret
+//! stringData:
+//!   ares.yaml: |-
+//!     - selector:
+//!       - ***
+//!       provider: cloudflare
+//!       providerConfig:
+//!         email: ryan@***
+//!         apiKey: ***
+//! ```
+// }}}
+
+
+// {{{ imports
 use anyhow::anyhow;
 use serde::{Serialize, Deserialize};
 use serde_json::value::{Value, Index, from_value};
@@ -8,16 +45,46 @@ use crate::reqwest_client_builder;
 use crate::xpathable::XPathable;
 
 use std::convert::{TryFrom, TryInto};
+// }}}
 
 static BASE_URL: &str = "https://api.cloudflare.com/client/v4";
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(untagged)]
 pub enum CloudFlareConfig {
+    /// A CloudFlare API token. Unlike an API key (when combined with an email,
+    /// gives full-account access), an API token can be limited to a specific
+    /// zone, a specific set of zones, or a certain set of permissions.
+    ///
+    /// To set up an API Token, navigate to the "My Profile" section of the
+    /// CloudFlare dashboard, then navigate to the "API Tokens" section. Then,
+    /// click the "Create Token" button, and use the "Edit zone DNS" template.
+    /// The required permissions are:
+    ///
+    /// - Zone / Zone / Read
+    /// - Zone / DNS / Edit
+    ///
+    /// To limit your CloudFlare token to a specific zone, choose a zone from
+    /// the Zone Resources option, which is already set up using the template.
+    ///
+    /// It is recommended to set the TTL to no more than a year. It is unknown
+    /// whether or not CloudFlare will automatically notify users when a token
+    /// is about to expire.
     Token {
         #[serde(rename="apiToken")]
         api_token: String,
     },
+    /// A CloudFlare API Key. Unlike an API Token, this key - when combined
+    /// with the email address of the account - is given the full permissions
+    /// of the account.
+    ///
+    /// To get your API Key, navigate to the "My Profile" section of the
+    /// CloudFlare dashboard, then use the "View" option for the Global API
+    /// Key. You will usually be prompted to enter your password and solve a
+    /// CAPTCHA.
+    ///
+    /// You will have to use your API Key in combination with the email
+    /// associated with the account for API Key authentication.
     EmailKey {
         #[serde(rename="email")]
         email: String,
@@ -44,6 +111,7 @@ macro_rules! client_builder {
 }
 
 impl CloudFlareConfig {
+    /// Create a Reqwest client using the cloudflare::client_builder!().
     fn get_client(&self) -> anyhow::Result<reqwest::Client> {
         match self {
             CloudFlareConfig::Token { api_token } => {

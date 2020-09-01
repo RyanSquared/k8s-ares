@@ -1,5 +1,8 @@
-//! records.syntixi.io/v1alpha1
+//! CRD and Code for records.syntixi.io/v1alpha1
 
+// vim:set foldmethod=marker:
+
+// {{{ imports
 use std::ops::{Deref, DerefMut};
 
 use crate::cli::Opts;
@@ -17,6 +20,7 @@ use kube::{
 };
 use kube_derive::CustomResource;
 use serde::{Serialize, Deserialize};
+// }}}
 
 type Selector = std::collections::HashMap<String, String>;
 
@@ -112,6 +116,10 @@ pub struct PodSelector {
 
 #[async_trait::async_trait]
 impl RecordValueCollector for PodSelector {
+    /// Create a set of ListParams based on the match_labels values passed to the Record
+    /// resource. List parameters are used to slim down the amount of values returned by
+    /// the Kubernetes API, but come with the potential downside of relying on the Kubernetes
+    /// API to filter by label.
     fn get_list_parameters(&self) -> ListParams {
         let mut list_params = ListParams::default();
         if let Some(match_labels) = &self.match_labels {
@@ -125,9 +133,6 @@ impl RecordValueCollector for PodSelector {
     /// Query IP addresses from Nodes that are running Pods. The matchLabels field will be passed
     /// to the Kubernetes server through ListParams, and the matchExpressions field will be run
     /// through the Expression::match_value() function.
-    ///
-    /// Command line configuration:
-    /// - --pod-namespace: Namespace to look for Pods
     async fn get_values(&self, meta: &ObjectMeta) -> Result<Vec<String>> {
         let list_params = self.get_list_parameters();
 

@@ -6,7 +6,7 @@ use serde::{Serialize, Deserialize};
 pub mod cloudflare;
 // }}}
 
-pub mod util {
+pub mod util { // {{{
     use anyhow::{anyhow, Result};
 
     use serde::{Serialize, Deserialize};
@@ -101,7 +101,11 @@ pub mod util {
         }
     }
 
-    /// Generate a Reqwest client for use in Providers.
+    /// Generate a Reqwest client for use in Providers. Providers that
+    /// implement an authentication logic should build their clients using a
+    /// custom client_builder!() macro for each provider and, if necessary,
+    /// create a get_client() function that can perform any necessary
+    /// handshakes.
     #[macro_export]
     macro_rules! reqwest_client_builder {
         () => ({
@@ -115,7 +119,9 @@ pub mod util {
         });
     }
 
-    /// Generic trait for getting, setting, and deleting DNS records.
+    /// `ProviderBackend` is a generic implementation for all potential
+    /// DNS backends, and can be used as a dynamic trait object to implement
+    /// interactions with the dynamic backend.
     #[async_trait::async_trait]
     pub trait ProviderBackend: Send {
         /// Get a deployed record from the backend service.
@@ -135,7 +141,7 @@ pub mod util {
         async fn delete_record(&mut self, domain: &ZoneDomainName, record: &Record) ->
                 anyhow::Result<()>;
     }
-}
+} // }}}
 
 use util::ProviderBackend;
 use cloudflare::CloudFlareConfig as CloudFlare;
