@@ -58,7 +58,7 @@ impl CloudFlareConfig {
 
 #[async_trait::async_trait]
 impl ProviderBackend for CloudFlareConfig {
-    async fn get_records(&self, domain: ZoneDomainName, name: SubDomainName) ->
+    async fn get_records(&self, domain: &ZoneDomainName, name: &SubDomainName) ->
             anyhow::Result<Vec<Record>> {
         let client = self.get_client()?;
         // Get Zone ID
@@ -91,9 +91,13 @@ impl ProviderBackend for CloudFlareConfig {
             // try xpath impl
             records.push(Record::new(
                 record
+                    .xpath("/zone_name")?
+                    .as_str()
+                    .ok_or(anyhow!("Unable to convert record[].zone_name to str"))?.to_string(),
+                record
                     .xpath("/name")?
                     .as_str()
-                    .ok_or(anyhow!("Unable to convert record[].name to str"))?.into(),
+                    .ok_or(anyhow!("Unable to convert record[].name to str"))?.to_string(),
                 record
                     .xpath("/ttl")?
                     .as_u64()
@@ -109,19 +113,19 @@ impl ProviderBackend for CloudFlareConfig {
         Ok(records)
     }
 
-    async fn get_all_records(&self, domain: ZoneDomainName) ->
+    async fn get_all_records(&self, domain: &ZoneDomainName) ->
             anyhow::Result<std::collections::HashMap<SubDomainName, Vec<Record>>> {
         // pass
         return Err(anyhow::anyhow!("NYI"));
     }
 
-    async fn add_record(&mut self, domain: ZoneDomainName, record: Record) ->
+    async fn add_record(&mut self, domain: &ZoneDomainName, record: &Record) ->
             anyhow::Result<()> {
         // pass
         return Err(anyhow::anyhow!("NYI"));
     }
 
-    async fn delete_record(&mut self, domain: ZoneDomainName, record: Record) ->
+    async fn delete_record(&mut self, domain: &ZoneDomainName, record: &Record) ->
             anyhow::Result<()> {
         // pass
         return Err(anyhow::anyhow!("NYI"));

@@ -1,0 +1,86 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: records.syntixi.io
+spec:
+  group: syntixi.io
+  versions:
+  - name: v1alpha1
+    served: true
+    storage: true
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          spec:
+            type: object
+            required: [fqdn, type]
+            properties:
+              fqdn:
+                type: string
+              type:
+                type: string
+                enum:
+                - A
+                - AAAA
+                - ALIAS
+                - CNAME
+                - MX
+                - NS
+                - PTR
+                - SOA
+                - SRV
+                - TXT
+                - DNSKEY
+                - DS
+                - NSEC
+                - NSEC3
+                - NSEC3PARAM
+                - RRSIG
+              ttl:
+                type: integer
+              value:
+                type: array
+                items:
+                  type: string
+              valueFrom:
+                type: object
+                properties:
+                  podSelector:
+                    type: object
+                    properties:
+                      matchLabels:
+                        x-kubernetes-preserve-unknown-fields: true
+                        type: object
+                      matchExpressions:
+                        type: array
+                        items:
+                          type: object
+                          required: [key, operator]
+                          properties:
+                            key:
+                              type: string
+                            operator:
+                              type: string
+                              enum:
+                              - In
+                              - NotIn
+                              - Exists
+                              - DoesNotExist
+                            values:
+                              type: array
+                              items:
+                                type: string
+                    anyOf:
+                    - required: [matchLabels]
+                    - required: [matchExpressions]
+                oneOf:
+                - required: [podSelector]
+            oneOf:
+            - required: [value]
+            - required: [valueFrom]
+  scope: Namespaced
+  names:
+    plural: records
+    singular: record
+    kind: Record

@@ -94,9 +94,9 @@
 // }}}
 
 // imports {{{
-use std::ops::Deref;
-
 use clap::Clap;
+
+use std::ops::Deref;
 
 use slog::{
     crit, debug, error, info, log, o,
@@ -114,37 +114,22 @@ use kube::{
 use kube_runtime::{utils::try_flatten_applied, watcher};
 use kube_derive::{CustomResource};
 
+mod cli;
+
 mod xpathable;
 
 mod providers;
 mod program_config;
+mod record_spec;
 
 use program_config::AresConfig;
 use providers::{ProviderConfig, util::{ProviderBackend, ZoneDomainName}};
+use record_spec::{Record, RecordValueCollector};
 // }}}
-
-#[derive(Clap, Debug)]
-#[clap(version = "1.0", author = "Ryan H. <ryan@hashbang.sh>")]
-struct Opts {
-    #[clap(long, env="SECRET")]
-    #[clap(default_value="ares-secret")]
-    #[clap(help="Name of Secret to load configuration from.")]
-    secret: String,
-
-    #[clap(long, env="SECRET_KEY")]
-    #[clap(default_value="ares.yaml")]
-    #[clap(help="Key of SECRET to load configuration from.")]
-    secret_key: String,
-
-    #[clap(long, env="SECRET_NAMESPACE")]
-    #[clap(default_value="default")]
-    #[clap(help="Namespace where the Secret is stored.")]
-    secret_namespace: String,
-}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let opts: Opts = Opts::parse();
+    let opts: cli::Opts = cli::Opts::parse();
     let decorator = slog_term::TermDecorator::new().build();
     let drain = slog_term::FullFormat::new(decorator).build().fuse();
     let drain = slog_async::Async::new(drain).build().fuse();
@@ -168,6 +153,16 @@ async fn main() -> anyhow::Result<()> {
         .clone().0;
 
     let config: Vec<AresConfig> = serde_yaml::from_str(std::str::from_utf8(&config_content[..])?)?;
+
+    { // Testing RecordSpec
+        let records: Api<Record> = Api::namespaced(Client::try_default().await?, "default");
+        let record = records.get("test").await?;
+        if let Some(collector_obj) = record.spec.value_from {
+            let collector = collector_obj.deref();
+            let ips = collector.get_values(&opts).await?;
+            dbg!(&ips);
+        }
+    }
 
     // normally, we'd have a watcher over a CRD, but we're just gonna oneshot the match
     for backend in config {

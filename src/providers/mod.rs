@@ -7,6 +7,8 @@ pub mod cloudflare;
 // }}}
 
 pub mod util {
+    use anyhow::{anyhow, Result};
+
     use serde::{Serialize, Deserialize};
     pub type ZoneDomainName = String;
     pub type FullDomainName = String;
@@ -30,22 +32,34 @@ pub mod util {
         DS,
         NSEC,
         NSEC3,
-        NSEC3PAARAM,
+        NSEC3PARAM,
         RRSIG,
     }
 
     #[derive(Serialize, Deserialize, Debug)]
     pub struct Record {
-        fqdn: FullDomainName,
-        ttl: u64,
-        record_type: RecordType,
-        value: String,
+        pub fqdn: FullDomainName,
+        pub zone: ZoneDomainName,
+        pub record_type: RecordType,
+        pub ttl: u64,
+        pub value: String,
+    }
+
+    #[derive(Serialize, Deserialize, Debug)]
+    pub struct RecordBuilder {
+        pub fqdn: FullDomainName,
+        pub zone: ZoneDomainName,
+        pub record_type: RecordType,
+        pub ttl: Option<u64>,
+        pub value: Option<String>,
     }
 
     impl Record {
-        pub fn new(fqdn: FullDomainName, ttl: u64, _type: RecordType, value: String) -> Record {
+        pub fn new(zone: ZoneDomainName, fqdn: FullDomainName, ttl: u64,
+                   _type: RecordType, value: String) -> Record {
             Record {
                 fqdn: fqdn,
+                zone: zone,
                 ttl: ttl,
                 record_type: _type,
                 value: value,
@@ -53,6 +67,25 @@ pub mod util {
         }
     }
 
+    impl RecordBuilder {
+        pub fn value(&mut self, value: String) -> &mut Self {
+            self.value = Some(value);
+            self
+        }
+
+        pub fn ttl(&mut self, ttl: u64) -> &mut Self {
+            self.ttl = Some(ttl);
+            self
+        }
+
+        pub fn build(&self) -> Result<Record> {
+            let ttl = self.ttl.ok_or(anyhow!("Missing TTL"))?;
+            let value = self.value.ok_or(anyhow!("Missing value"))?;
+            Ok(Record::new(self.zone, self.fqdn, ttl, self.record_type, value))
+        }
+    }
+
+    /// Generate a Reqwest client for use in Providers.
     #[macro_export]
     macro_rules! reqwest_client_builder {
         () => ({
@@ -70,20 +103,20 @@ pub mod util {
     #[async_trait::async_trait]
     pub trait ProviderBackend {
         /// Get a deployed record from the backend service.
-        async fn get_records(&self, domain: ZoneDomainName, name: SubDomainName) ->
+        async fn get_records(&self, domain: &ZoneDomainName, name: &SubDomainName) ->
                 anyhow::Result<Vec<Record>>;
 
         /// Get all records from the backend service, as a pairing of record entry
         /// to record value.
-        async fn get_all_records(&self, domain: ZoneDomainName) ->
+        async fn get_all_records(&self, domain: &ZoneDomainName) ->
                 anyhow::Result<std::collections::HashMap<SubDomainName, Vec<Record>>>;
 
         /// Add a DNS Record.
-        async fn add_record(&mut self, domain: ZoneDomainName, record: Record) ->
+        async fn add_record(&mut self, domain: &ZoneDomainName, record: &Record) ->
                 anyhow::Result<()>;
 
         /// Delete a DNS Record.
-        async fn delete_record(&mut self, domain: ZoneDomainName, record: Record) ->
+        async fn delete_record(&mut self, domain: &ZoneDomainName, record: &Record) ->
                 anyhow::Result<()>;
     }
 }
