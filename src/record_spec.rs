@@ -3,11 +3,11 @@
 // vim:set foldmethod=marker:
 
 // {{{ imports
-use std::ops::{Deref, DerefMut};
+use std::ops::Deref;
 
 use crate::cli::Opts;
 use crate::providers::{
-    util::{ProviderBackend, ZoneDomainName, RecordBuilder},
+    util::{ProviderBackend, FullDomainName, ZoneDomainName, RecordBuilder, RecordType},
     ProviderConfig,
 };
 
@@ -83,7 +83,7 @@ pub enum RecordChange<'a> {
 /// a value to correctly match a selector. This should be taken into consideration when
 /// implementing a value acquirer.
 #[async_trait::async_trait]
-pub trait RecordValueCollector {
+pub trait RecordValueCollector: Send + Sync {
     /// Return a default ListParams object. This should be overridden per-instance of
     /// RecordValueCollector if the matchLabels arguments can be passed through ListParams, as
     /// otherwise they will need to be parsed manually after acquiring all matching resources.
@@ -97,13 +97,22 @@ pub trait RecordValueCollector {
 
     async fn get_values(&self, meta: &ObjectMeta) -> Result<Vec<String>>;
 
+    /// Synchronize the remote Records with the correct Values. This should be run once, when
+    /// initializing a RecordValueCollector, as further requests will introduce a large amount
+    /// of traffic to the backend provider.
+    ///
+    /// This command can also be run in a timed loop during watch_values when a watcher over
+    /// a resource is not available, but for the aforementioned reasons this is not recommended.
+    async fn sync(&self, meta: &ObjectMeta, provider_config: &ProviderConfig,
+                  record_builder: &mut RecordBuilder) -> Result<()>;
+
     /// Ensure by watching relevant objects (such as Pods) have a Record for every instance, and
     /// that if an object no longer has a connection to the relevant record (such as a Pod no
     /// longer existing on a Node) that the Record is removed. The ObjectMeta passed to the
     /// function should be the ObjectMeta of the Record. This is so namespaced attributes have an
     /// object with which to tie their reference.
-    async fn on_value_change(&self, meta: &ObjectMeta, provider_config: &mut ProviderConfig,
-                             record_builder: &mut RecordBuilder) -> Result<()>;
+    async fn watch_values(&self, meta: &ObjectMeta, provider_config: &ProviderConfig,
+                          record_builder: &mut RecordBuilder) -> Result<()>;
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
@@ -191,10 +200,18 @@ impl RecordValueCollector for PodSelector {
         Ok(ips)
     }
 
+    async fn sync(&self, meta: &ObjectMeta, provider_config: &ProviderConfig,
+                  record_builder: &mut RecordBuilder) -> Result<()> {
+        let values = self.get_values(meta).await?;
+        let provider: &dyn ProviderBackend = provider_config.deref();
+        provider.sync_records(record_builder, &values).await?;
+        Ok(())
+    }
+
     /// Watch over changes to all Pods to determine whether or not a new IP address has been
     /// added or whether an old IP address no longer hosts an instance of the pod.
-    async fn on_value_change(&self, meta: &ObjectMeta, provider_config: &mut ProviderConfig,
-                            record_builder: &mut RecordBuilder) -> Result<()> {
+    async fn watch_values(&self, meta: &ObjectMeta, provider_config: &ProviderConfig,
+                          record_builder: &mut RecordBuilder) -> Result<()> {
         // TODO: async watcher over PodSelector, call f() every time a new Node is added or an
         // old Node is removed.
         let list_params = self.get_list_parameters();
@@ -267,23 +284,23 @@ impl RecordValueCollector for PodSelector {
                         }; // let ev
                         if let Some(event) = ev {
                             // pass
-                            let provider: &mut dyn ProviderBackend = provider_config.deref_mut();
+                            let provider: &dyn ProviderBackend = provider_config.deref();
                             match event {
                                 RecordChange::Add(value) => {
                                     let new_value = value.clone();
                                     let record = record_builder
-                                        .value(new_value)
-                                        .ttl(5) // ::TODO:: custom TTL
                                         .clone()
+                                        .value(new_value)
+                                        .ttl(1) // ::TODO:: custom TTL
                                         .try_build()?;
                                     provider.add_record(&record.zone, &record).await?;
                                 },
                                 RecordChange::Remove(value) => {
                                     let new_value = value.clone();
                                     let record = record_builder
-                                        .value(new_value)
-                                        .ttl(5) // ::TODO:: custom TTL
                                         .clone()
+                                        .value(new_value)
+                                        .ttl(1) // ::TODO:: custom TTL
                                         .try_build()?;
                                     provider.delete_record(&record.zone, &record).await?;
                                 }
@@ -320,10 +337,10 @@ trait_enum::trait_enum! {
 #[derive(CustomResource, Clone, Deserialize, Serialize, Debug)]
 #[kube(group="syntixi.io", version="v1alpha1", namespaced)]
 pub struct RecordSpec {
-    pub fqdn: String,
+    pub fqdn: FullDomainName,
     pub ttl: u32,
     #[serde(rename = "type")]
-    pub type_: String,
+    pub type_: RecordType,
     pub value: Option<Vec<String>>,
     #[serde(rename = "valueFrom")]
     pub value_from: Option<RecordValueFrom>,

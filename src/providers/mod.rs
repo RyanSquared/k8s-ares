@@ -80,14 +80,18 @@ pub mod util { // {{{
     }
 
     impl RecordBuilder {
-        pub fn value(&mut self, value: String) -> &mut Self {
-            self.value = Some(value);
-            self
+        pub fn value(self, value: String) -> Self {
+            RecordBuilder {
+                value: Some(value),
+                ..self
+            }
         }
 
-        pub fn ttl(&mut self, ttl: u64) -> &mut Self {
-            self.ttl = Some(ttl);
-            self
+        pub fn ttl(self, ttl: u64) -> Self {
+            RecordBuilder {
+                ttl: Some(ttl),
+                ..self
+            }
         }
 
         pub fn try_build(self) -> Result<Record> {
@@ -123,23 +127,87 @@ pub mod util { // {{{
     /// DNS backends, and can be used as a dynamic trait object to implement
     /// interactions with the dynamic backend.
     #[async_trait::async_trait]
-    pub trait ProviderBackend: Send {
+    pub trait ProviderBackend: Send + Sync {
+        /// Obtaina a Zone for a DNS Record; this usually results in a batch attempt
+        /// of obtaining zone information from the server, so do not call it more
+        /// than is required.
+        async fn get_zone(&self, domain: &FullDomainName) -> Result<ZoneDomainName>;
+
         /// Get a deployed record from the backend service.
-        async fn get_records(&self, domain: &ZoneDomainName, name: &SubDomainName) ->
-                anyhow::Result<Vec<Record>>;
+        async fn get_records(&self, domain: &ZoneDomainName, name: &FullDomainName) ->
+                Result<Vec<Record>>;
 
         /// Get all records from the backend service, as a pairing of record entry
         /// to record value.
         async fn get_all_records(&self, domain: &ZoneDomainName) ->
-                anyhow::Result<std::collections::HashMap<SubDomainName, Vec<Record>>>;
+                Result<std::collections::HashMap<SubDomainName, Vec<Record>>>;
 
         /// Add a DNS Record.
-        async fn add_record(&mut self, domain: &ZoneDomainName, record: &Record) ->
-                anyhow::Result<()>;
+        async fn _add_record(&self, domain: &ZoneDomainName, record: &Record) -> Result<()>;
 
         /// Delete a DNS Record.
-        async fn delete_record(&mut self, domain: &ZoneDomainName, record: &Record) ->
-                anyhow::Result<()>;
+        async fn _delete_record(&self, domain: &ZoneDomainName, record: &Record) -> Result<()>;
+
+        /// Add a DNS record and tracking record.
+        async fn add_record(&self, domain: &ZoneDomainName, record: &Record) -> Result<()> {
+            // TODO more heritage information in DNS record
+            let tracking_domain = format!("{}.{}", "_owner", &record.fqdn);
+            let tracking_record = self
+                .get_records(domain, &tracking_domain)
+                .await?;
+            if let Some(r) = tracking_record.get(0) {
+                // we have a tracking record, we should *not* have a tracking record.
+                return Err(anyhow!("Found existing tracking record: {}", tracking_domain));
+            }
+            let record_builder = Record::builder(tracking_domain, domain.clone(),
+                                                 RecordType::TXT)
+                .value("ares".to_string())
+                .ttl(1);
+            self._add_record(domain, &record_builder.try_build()?).await?;
+            self._add_record(domain, record).await?;
+            Ok(())
+        }
+
+        /// Remove a DNS record and tracking record.
+        async fn delete_record(&self, domain: &ZoneDomainName, record: &Record) ->
+                Result<()> {
+            let tracking_domain = format!("{}.{}", "_owner", &record.fqdn);
+            let tracking_record = self
+                .get_records(domain, &tracking_domain)
+                .await?;
+            match tracking_record.iter().filter(|x| x.value == "ares".to_string()).next() {
+                Some(r) => {
+                    self._delete_record(domain, record).await?;
+                    self._delete_record(domain, r).await?;
+                    Ok(())
+                },
+                None => Err(anyhow!("Missing tracking record: {}", tracking_domain))
+            }
+        }
+
+
+        /// Get records from the remote server and ensure that the remote records
+        /// match the given records.
+        async fn sync_records(&self, record_builder: &RecordBuilder,
+                              records: &Vec<String>) -> Result<()> {
+            let fqdn = &record_builder.fqdn;
+            let zone = &record_builder.zone;
+            let remote_records = self.get_records(zone, fqdn).await?;
+            for record in remote_records.iter().filter(|x| !records.contains(&x.value)) {
+                self.delete_record(zone, record).await?;
+            }
+            for record in records {
+                if remote_records.iter().filter(|x| x.value == *record).next().is_none() {
+                    let record_entry = record_builder
+                        .clone()
+                        .value(record.clone())
+                        .ttl(1) // TODO: custom TTL
+                        .try_build()?;
+                    self.add_record(zone, &record_entry).await?;
+                }
+            }
+            Ok(())
+        }
     }
 } // }}}
 
@@ -147,7 +215,7 @@ use util::ProviderBackend;
 use cloudflare::CloudFlareConfig as CloudFlare;
 
 trait_enum::trait_enum! {
-    #[derive(Serialize, Deserialize, Debug)]
+    #[derive(Serialize, Deserialize, Clone, Debug)]
     #[serde(tag="provider", content="providerOptions")]
     pub enum ProviderConfig: ProviderBackend {
         #[serde(rename="cloudflare")]

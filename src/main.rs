@@ -1,5 +1,6 @@
 #![warn(clippy::all, clippy::pedantic)]
 #![warn(missing_docs)]
+
 // vim:set et sw=4 ts=4 foldmethod=marker:
 
 // starting doc {{{
@@ -115,7 +116,7 @@ use slog::{
     Drain, Logger,
 };
 
-use anyhow::anyhow;
+use anyhow::{anyhow, Result};
 
 use futures::{StreamExt, TryStreamExt};
 use k8s_openapi::api::core::v1::{Event, Secret};
@@ -141,7 +142,7 @@ use record_spec::{Record, RecordValueCollector};
 // }}}
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> Result<()> {
     let opts: cli::Opts = cli::Opts::parse();
     let decorator = slog_term::TermDecorator::new().build();
     let drain = slog_term::FullFormat::new(decorator).build().fuse();
@@ -165,33 +166,64 @@ async fn main() -> anyhow::Result<()> {
         .ok_or(anyhow!("Unable to get key from Secret"))?
         .clone().0;
 
+    debug!(root_logger, "Configuration loaded from Secret");
     let mut config: Vec<AresConfig> = serde_yaml::from_str(std::str::from_utf8(&config_content[..])?)?;
 
-    { // Testing RecordSpec
-        let records: Api<Record> = Api::all(Client::try_default().await?);
-        let list = records.list(&ListParams::default()).await?;
-        let record = list.iter().next().unwrap();
-        if let Some(collector_obj) = &record.spec.value_from {
-            let collector = collector_obj.deref();
-            let zone = String::from("syntixi.io");
-            let mut config = config.remove(0).provider;
-            let mut builder = RecordObject::builder(record.spec.fqdn.clone(), zone, RecordType::A);
-            collector.on_value_change(&record.metadata, &mut config, &mut builder).await?;
+    let records: Api<Record> = Api::all(Client::try_default().await?);
+    let record_list = records.list(&ListParams::default()).await?;
+
+    let mut handles = vec![];
+
+    // TODO watch over config and reload when changes are made
+    for ares in config {
+        // Find all matching Records and put a ref of them into a Vec
+        let mut allowed_records: Vec<&Record> = vec![];
+        let allowed_records: Vec<Record> = record_list
+            .iter()
+            .filter(|record| ares.matches_selector(record.spec.fqdn.as_str()))
+            .map(|x| x.clone())
+            .collect();
+
+        // TODO avoid using .clone() for ares objects by using a Rc
+        // TODO put a watcher over records instead of just getting them at program start
+        for record in allowed_records {
+            // It is not possible to use .filter on the records list instead of using a specific
+            // if branch because we need the `ares` object to be non-borrowed when we call
+            // collector.sync() as that method needs a mutable reference.
+            let sub_logger = root_logger.new(o!("record" => record.spec.fqdn.clone()));
+            let sub_ac = ares.clone();
+            handles.push(tokio::spawn(async move {
+                // TODO repeat
+                if let Some(collector_obj) = &record.spec.value_from {
+                    let collector = collector_obj.deref();
+                    info!(sub_logger, "Getting zone domain name");
+                    let zone = match sub_ac.provider.get_zone(&record.spec.fqdn).await {
+                        Ok(z) => z,
+                        Err(e) => {
+                            crit!(sub_logger, "Error! {}", e);
+                            return;
+                        }
+                    };
+                    let mut builder = RecordObject::builder(record.spec.fqdn.clone(),
+                                                            zone, RecordType::A);
+                    info!(sub_logger, "Syncing");
+                    let sync_state = collector.sync(&record.metadata, &sub_ac.provider,
+                                                    &mut builder).await;
+                    if let Err(e) = sync_state {
+                        crit!(sub_logger, "Error! {}", e);
+                    }
+                    collector.sync(&record.metadata, &sub_ac.provider, &mut builder).await;
+                    info!(sub_logger, "Finished syncing");
+
+                    info!(sub_logger, "Spawning watcher");
+                    let res = collector.watch_values(&record.metadata, &sub_ac.provider,
+                                                     &mut builder).await;
+                }
+            }));
         }
     }
 
-    // normally, we'd have a watcher over a CRD, but we're just gonna oneshot the match
-    for backend in config {
-        let provider: &dyn ProviderBackend = backend.provider.deref();
-
-        for selector in &backend.selector {
-            info!(root_logger, "found selector"; o!("selector" => selector));
-            let records = provider.get_records(selector.into(), selector.into()).await?;
-            for record in records {
-                info!(root_logger, "have record! is {:?}", record);
-            }
-        }
-    }
+    futures::future::join_all(handles).await;
 
     Ok(())
 }

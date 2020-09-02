@@ -33,9 +33,8 @@
 //! ```
 // }}}
 
-
 // {{{ imports
-use anyhow::anyhow;
+use anyhow::{anyhow, Result};
 use serde::{Serialize, Deserialize};
 use serde_json::value::{Value, Index, from_value};
 use reqwest::header;
@@ -49,7 +48,7 @@ use std::convert::{TryFrom, TryInto};
 
 static BASE_URL: &str = "https://api.cloudflare.com/client/v4";
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(untagged)]
 pub enum CloudFlareConfig {
     /// A CloudFlare API token. Unlike an API key (when combined with an email,
@@ -111,8 +110,20 @@ macro_rules! client_builder {
 }
 
 impl CloudFlareConfig {
+    /// Get a Zone ID for a given domain name.
+    async fn get_zone(&self, c: &reqwest::Client, zone: &ZoneDomainName) -> Result<String> {
+        let result: Value = c.get(format!("{}/zones?name={}", BASE_URL, zone).as_str())
+            .send().await?
+            .json().await?;
+        let zone_id = result
+            .xpath("/result/0/id")?
+            .as_str()
+            .ok_or(anyhow!("Unable to convert zone ID to string"))?;
+        Ok(zone_id.to_string())
+    }
+
     /// Create a Reqwest client using the cloudflare::client_builder!().
-    fn get_client(&self) -> anyhow::Result<reqwest::Client> {
+    fn get_client(&self) -> Result<reqwest::Client> {
         match self {
             CloudFlareConfig::Token { api_token } => {
                 Ok(client_builder!(auth::bearer(auth_token => api_token)).build()?)
@@ -126,8 +137,38 @@ impl CloudFlareConfig {
 
 #[async_trait::async_trait]
 impl ProviderBackend for CloudFlareConfig {
+    async fn get_zone(&self, domain: &FullDomainName) -> Result<ZoneDomainName> {
+        // bubble up for every segment of the domain name
+        // eventually we should hit a valid record
+        let mut index = 0;
+        let len = domain.len();
+        let client = self.get_client()?;
+        while index != len {
+            let substr = &domain[index..len];
+            let result: Value = client.get(format!("{}/zones?name={}", BASE_URL, substr).as_str())
+                .send().await?
+                .json().await?;
+            // check for error
+            if result.xpath("/success")?.as_bool()
+                     .ok_or(anyhow!("Unable to convert success to bool"))? {
+                return Ok(result
+                    .xpath("/result/0/name")?
+                    .as_str()
+                    .ok_or(anyhow!("Unable to convert result.name to str"))?
+                    .to_string());
+            }
+            if let Some(offset) = substr.find(".") {
+                // increment offset to capture the period
+                index += offset + 1;
+            } else {
+                break
+            }
+        }
+        Err(anyhow!("Unable to find DNS Zone for: {}", domain))
+    }
+
     async fn get_records(&self, domain: &ZoneDomainName, name: &SubDomainName) ->
-            anyhow::Result<Vec<Record>> {
+            Result<Vec<Record>> {
         let client = self.get_client()?;
         // Get Zone ID
         let result: Value = client.get(format!("{}/zones?name={}", BASE_URL, domain).as_str())
@@ -182,20 +223,48 @@ impl ProviderBackend for CloudFlareConfig {
     }
 
     async fn get_all_records(&self, domain: &ZoneDomainName) ->
-            anyhow::Result<std::collections::HashMap<SubDomainName, Vec<Record>>> {
+            Result<std::collections::HashMap<SubDomainName, Vec<Record>>> {
         // pass
-        return Err(anyhow::anyhow!("NYI"));
+        unimplemented!();
     }
 
-    async fn add_record(&mut self, domain: &ZoneDomainName, record: &Record) ->
-            anyhow::Result<()> {
+    async fn _add_record(&self, domain: &ZoneDomainName, record: &Record) -> Result<()> {
         // pass
-        return Err(anyhow::anyhow!("NYI"));
+        let client = self.get_client()?;
+        let zone_id = self.get_zone(&client, domain).await?;
+        let url = format!("{}/zones/{}/dns_records", BASE_URL, zone_id);
+        let mut data = std::collections::HashMap::<&str, serde_json::Value>::new();
+        data.insert("type", serde_json::to_value(&record.record_type)?);
+        data.insert("name", serde_json::to_value(&record.fqdn)?);
+        data.insert("content", serde_json::to_value(&record.value)?);
+        data.insert("ttl", serde_json::to_value(record.ttl)?);
+        let result: Value = client.post(url.as_str())
+            .json(&data)
+            .send()
+            .await?
+            .json()
+            .await?;
+        if result.xpath("/success")?.as_bool()
+                 .ok_or(anyhow!("Unable to convert success to bool"))? {
+            Ok(())
+        } else {
+            if let Ok(error_object) = result.xpath("/errors/0/error_chain/0/message") {
+                let error_str = error_object
+                    .as_str()
+                    .ok_or(anyhow!("Unable to convert errors/0/error_chain/0/message to str"))?;
+                Err(anyhow!("{}", error_str))
+            } else {
+                let error_str = result
+                    .xpath("/errors/0/message")?
+                    .as_str()
+                    .ok_or(anyhow!("Unable to convert errors/0/message to str"))?;
+                Err(anyhow!("{}", error_str))
+            }
+        }
     }
 
-    async fn delete_record(&mut self, domain: &ZoneDomainName, record: &Record) ->
-            anyhow::Result<()> {
+    async fn _delete_record(&self, domain: &ZoneDomainName, record: &Record) -> Result<()> {
         // pass
-        return Err(anyhow::anyhow!("NYI"));
+        unimplemented!();
     }
 }
