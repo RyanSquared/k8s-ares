@@ -203,8 +203,6 @@ impl RecordValueCollector for PodSelector {
         let pods: Api<Pod> = Api::all(Client::try_default().await?);
         let mut stream = pods.watch(&list_params, "0").await?.boxed();
         while let Some(pod_status) = stream.try_next().await? {
-            let mut new_values = self.get_values(&meta).await?;
-            new_values.sort();
             match pod_status {
                 | WatchEvent::Added(_)
                 | WatchEvent::Deleted(_) => {
@@ -214,6 +212,8 @@ impl RecordValueCollector for PodSelector {
                     // exist on the same machine. If we were to indiscriminantly remove the IP
                     // address, this could lead to moving from two Pods to one, but the IP still
                     // being removed.
+                    let mut new_values = self.get_values(&meta).await?;
+                    new_values.sort();
                     let (mut left_index, mut right_index) = (0, 0);
                     loop {
                         // Check if old_values differs from new_values. If new_values does not
@@ -290,6 +290,7 @@ impl RecordValueCollector for PodSelector {
                             }
                         }
                     }
+                    current_values = new_values;
                 },
                 | WatchEvent::Modified(_)
                 | WatchEvent::Bookmark(_) => {
@@ -303,7 +304,6 @@ impl RecordValueCollector for PodSelector {
                     return Err(e.into())
                 }
             }
-            current_values = new_values;
         }
         Err(anyhow!("For some reason, we're not watching over Pods anymore."))
     }
