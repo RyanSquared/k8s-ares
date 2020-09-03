@@ -197,13 +197,12 @@ async fn main() -> Result<()> {
 
         // TODO put a watcher over records instead of just getting them at program start
         for mut record in allowed_records {
-            // It is not possible to use .filter on the records list instead of using a specific
-            // if branch because we need the `ares` object to be non-borrowed when we call
-            // collector.sync() as that method needs a mutable reference.
-            let sub_logger = root_logger.new(o!("record" => record.spec.fqdn.clone()));
+            // Generate a proxy logger to be cloned so we can build upon it every loop
+            let proxy_logger = root_logger.new(o!());
             let sub_ac = ares.clone(); // clone of Arc<> is intentional
             handles.push(tokio::spawn(async move {
                 loop {
+                    let sub_logger = proxy_logger.new(o!("record" => record.spec.fqdn.clone()));
                     if let Some(collector_obj) = &record.spec.value_from {
                         let collector = collector_obj.deref();
                         info!(sub_logger, "Getting zone domain name");
@@ -216,12 +215,17 @@ async fn main() -> Result<()> {
                         };
                         let mut builder = RecordObject::builder(record.spec.fqdn.clone(),
                                                                 zone, RecordType::A);
-                        info!(sub_logger, "Syncing");
-                        let sync_state = collector.sync(&record.metadata, &sub_ac.provider,
-                                                        &mut builder).await;
-                        if let Err(e) = sync_state {
-                            crit!(sub_logger, "Error! {}", e);
-                            break
+                        /*
+                         * Syncing is not required if we're using a Watcher
+                         */
+                        if false {
+                            info!(sub_logger, "Syncing");
+                            let sync_state = collector.sync(&record.metadata, &sub_ac.provider,
+                                                            &mut builder).await;
+                            if let Err(e) = sync_state {
+                                crit!(sub_logger, "Error! {}", e);
+                                break
+                            }
                         }
                         info!(sub_logger, "Finished syncing");
 
@@ -241,7 +245,6 @@ async fn main() -> Result<()> {
                         }
                     }
                 }
-                crit!(sub_logger, "No longer watching!");
             }));
         }
     }
