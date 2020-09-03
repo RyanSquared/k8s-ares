@@ -215,17 +215,14 @@ async fn main() -> Result<()> {
                         };
                         let mut builder = RecordObject::builder(record.spec.fqdn.clone(),
                                                                 zone, RecordType::A);
-                        /*
-                         * Syncing is not required if we're using a Watcher
-                         */
-                        if false {
-                            info!(sub_logger, "Syncing");
-                            let sync_state = collector.sync(&record.metadata, &sub_ac.provider,
-                                                            &mut builder).await;
-                            if let Err(e) = sync_state {
-                                crit!(sub_logger, "Error! {}", e);
-                                break
-                            }
+                        // Syncing should happen regardless of using a watcher to ensure that any
+                        // extra records are deleted.
+                        info!(sub_logger, "Syncing");
+                        let sync_state = collector.sync(&record.metadata, &sub_ac.provider,
+                                                        &mut builder).await;
+                        if let Err(e) = sync_state {
+                            crit!(sub_logger, "Error! {}", e);
+                            break
                         }
                         info!(sub_logger, "Finished syncing");
 
