@@ -324,8 +324,8 @@ impl RecordValueCollector for PodSelector {
                                             right_index += 1;
                                             Some(RecordChange::Add(right))
                                         } else {
-                                            // Both indexes are the same. Increment each index by one, and
-                                            // do not produce an event.
+                                            // Both indexes are the same. Increment each index by
+                                            // one, and do not produce an event.
                                             left_index += 1;
                                             right_index += 1;
                                             None
