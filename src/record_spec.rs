@@ -218,9 +218,6 @@ impl RecordValueCollector for PodSelector {
     /// added or whether an old IP address no longer hosts an instance of the pod.
     async fn watch_values(&self, meta: &ObjectMeta, provider_config: &ProviderConfig,
                           record_builder: &mut RecordBuilder) -> Result<Record> {
-        // FIXME
-        // ListParams can't assign a Name to use, so we have to manually filter.
-        // This is not the best. :/
         let mut current_values = self.get_values(meta).await?;
         current_values.sort();
 
