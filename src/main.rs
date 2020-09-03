@@ -1,7 +1,10 @@
+// vim:set et sw=4 ts=4 foldmethod=marker:
+
 #![warn(clippy::all, clippy::pedantic)]
 #![warn(missing_docs)]
 
-// vim:set et sw=4 ts=4 foldmethod=marker:
+#![recursion_limit="512"]
+
 
 // starting doc {{{
 //! ARES: Automatic REcord System.
@@ -193,39 +196,52 @@ async fn main() -> Result<()> {
             .collect();
 
         // TODO put a watcher over records instead of just getting them at program start
-        for record in allowed_records {
+        for mut record in allowed_records {
             // It is not possible to use .filter on the records list instead of using a specific
             // if branch because we need the `ares` object to be non-borrowed when we call
             // collector.sync() as that method needs a mutable reference.
             let sub_logger = root_logger.new(o!("record" => record.spec.fqdn.clone()));
             let sub_ac = ares.clone(); // clone of Arc<> is intentional
             handles.push(tokio::spawn(async move {
-                // TODO repeat
-                if let Some(collector_obj) = &record.spec.value_from {
-                    let collector = collector_obj.deref();
-                    info!(sub_logger, "Getting zone domain name");
-                    let zone = match sub_ac.provider.get_zone(&record.spec.fqdn).await {
-                        Ok(z) => z,
-                        Err(e) => {
+                loop {
+                    if let Some(collector_obj) = &record.spec.value_from {
+                        let collector = collector_obj.deref();
+                        info!(sub_logger, "Getting zone domain name");
+                        let zone = match sub_ac.provider.get_zone(&record.spec.fqdn).await {
+                            Ok(z) => z,
+                            Err(e) => {
+                                crit!(sub_logger, "Error! {}", e);
+                                break
+                            }
+                        };
+                        let mut builder = RecordObject::builder(record.spec.fqdn.clone(),
+                                                                zone, RecordType::A);
+                        info!(sub_logger, "Syncing");
+                        let sync_state = collector.sync(&record.metadata, &sub_ac.provider,
+                                                        &mut builder).await;
+                        if let Err(e) = sync_state {
                             crit!(sub_logger, "Error! {}", e);
-                            return;
+                            break
                         }
-                    };
-                    let mut builder = RecordObject::builder(record.spec.fqdn.clone(),
-                                                            zone, RecordType::A);
-                    info!(sub_logger, "Syncing");
-                    let sync_state = collector.sync(&record.metadata, &sub_ac.provider,
-                                                    &mut builder).await;
-                    if let Err(e) = sync_state {
-                        crit!(sub_logger, "Error! {}", e);
-                    }
-                    collector.sync(&record.metadata, &sub_ac.provider, &mut builder).await;
-                    info!(sub_logger, "Finished syncing");
+                        info!(sub_logger, "Finished syncing");
 
-                    info!(sub_logger, "Spawning watcher");
-                    let res = collector.watch_values(&record.metadata, &sub_ac.provider,
-                                                     &mut builder).await;
+                        info!(sub_logger, "Spawning watcher");
+                        let res = collector.watch_values(&record.metadata, &sub_ac.provider,
+                                                         &mut builder).await;
+                        info!(sub_logger, "Stopped watching");
+
+                        // Set a new record if the watcher stops; this could be the result of a
+                        // timeout or a change in the Record value, which may need a refresh.
+                        record = match res {
+                            Ok(r) => Arc::new(r),
+                            Err(e) => {
+                                crit!(sub_logger, "Error! {}", e);
+                                break
+                            }
+                        }
+                    }
                 }
+                crit!(sub_logger, "No longer watching!");
             }));
         }
     }
