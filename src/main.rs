@@ -176,14 +176,14 @@ async fn main() -> Result<()> {
         serde_yaml::from_str::<Vec<_>>(std::str::from_utf8(&config_content[..])?)?
         .into_iter()
         .map(|x| Arc::new(x))
-        .collect::<Vec<Arc<_>>>();
+        .collect();
 
     let records: Api<Record> = Api::all(Client::try_default().await?);
     let record_list: Vec<Arc<Record>> = records.list(&ListParams::default()).await?
         .items
         .into_iter()
         .map(|x| Arc::new(x))
-        .collect::<Vec<Arc<_>>>();
+        .collect();
 
     let mut handles = vec![];
 
