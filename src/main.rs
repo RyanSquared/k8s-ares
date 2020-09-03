@@ -110,6 +110,7 @@
 use clap::Clap;
 
 use std::ops::Deref;
+use std::sync::Arc;
 
 use slog::{
     crit, debug, error, info, log, o,
@@ -167,31 +168,37 @@ async fn main() -> Result<()> {
         .clone().0;
 
     debug!(root_logger, "Configuration loaded from Secret");
-    let mut config: Vec<AresConfig> = serde_yaml::from_str(std::str::from_utf8(&config_content[..])?)?;
+    let config: Vec<Arc<AresConfig>> =
+        serde_yaml::from_str::<Vec<_>>(std::str::from_utf8(&config_content[..])?)?
+        .into_iter()
+        .map(|x| Arc::new(x))
+        .collect::<Vec<Arc<_>>>();
 
     let records: Api<Record> = Api::all(Client::try_default().await?);
-    let record_list = records.list(&ListParams::default()).await?;
+    let record_list: Vec<Arc<Record>> = records.list(&ListParams::default()).await?
+        .items
+        .into_iter()
+        .map(|x| Arc::new(x))
+        .collect::<Vec<Arc<_>>>();
 
     let mut handles = vec![];
 
     // TODO watch over config and reload when changes are made
-    for ares in config {
+    for ares in config.into_iter() {
         // Find all matching Records and put a ref of them into a Vec
-        let mut allowed_records: Vec<&Record> = vec![];
-        let allowed_records: Vec<Record> = record_list
+        let allowed_records: Vec<Arc<Record>> = record_list
             .iter()
             .filter(|record| ares.matches_selector(record.spec.fqdn.as_str()))
-            .map(|x| x.clone())
+            .map(|x| x.clone()) // clone() of Arc<> is intentional
             .collect();
 
-        // TODO avoid using .clone() for ares objects by using a Rc
         // TODO put a watcher over records instead of just getting them at program start
         for record in allowed_records {
             // It is not possible to use .filter on the records list instead of using a specific
             // if branch because we need the `ares` object to be non-borrowed when we call
             // collector.sync() as that method needs a mutable reference.
             let sub_logger = root_logger.new(o!("record" => record.spec.fqdn.clone()));
-            let sub_ac = ares.clone();
+            let sub_ac = ares.clone(); // clone of Arc<> is intentional
             handles.push(tokio::spawn(async move {
                 // TODO repeat
                 if let Some(collector_obj) = &record.spec.value_from {
