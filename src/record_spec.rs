@@ -11,6 +11,12 @@ use crate::providers::{
     ProviderConfig,
 };
 
+use futures::{
+    future::FutureExt,
+    pin_mut,
+    select,
+};
+
 use anyhow::{anyhow, Result};
 use k8s_openapi::api::core::v1::{Pod, Node};
 use futures::{StreamExt, TryStreamExt};
@@ -112,7 +118,7 @@ pub trait RecordValueCollector: Send + Sync {
     /// function should be the ObjectMeta of the Record. This is so namespaced attributes have an
     /// object with which to tie their reference.
     async fn watch_values(&self, meta: &ObjectMeta, provider_config: &ProviderConfig,
-                          record_builder: &mut RecordBuilder) -> Result<()>;
+                          record_builder: &mut RecordBuilder) -> Result<Record>;
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
@@ -211,118 +217,182 @@ impl RecordValueCollector for PodSelector {
     /// Watch over changes to all Pods to determine whether or not a new IP address has been
     /// added or whether an old IP address no longer hosts an instance of the pod.
     async fn watch_values(&self, meta: &ObjectMeta, provider_config: &ProviderConfig,
-                          record_builder: &mut RecordBuilder) -> Result<()> {
-        // TODO: async watcher over PodSelector, call f() every time a new Node is added or an
-        // old Node is removed.
-        let list_params = self.get_list_parameters();
+                          record_builder: &mut RecordBuilder) -> Result<Record> {
+        // FIXME
+        // ListParams can't assign a Name to use, so we have to manually filter.
+        // This is not the best. :/
         let mut current_values = self.get_values(meta).await?;
         current_values.sort();
+
+        let record_name: &str = meta.name.as_ref().ok_or(anyhow!("Missing record.meta.name"))?;
+        let record_namespace: &str = meta
+            .namespace
+            .as_ref()
+            .ok_or(anyhow!("Missing record.meta.namespace"))?;
+        let record_list_params = ListParams::default();
+        let records: Api<Record> = Api::namespaced(Client::try_default().await?,
+                                                   record_namespace);
+        let mut record_watcher = records.watch(&record_list_params, "0").await?.boxed().fuse();
+
+        let list_params = self.get_list_parameters();
         let pods: Api<Pod> = Api::all(Client::try_default().await?);
-        let mut stream = pods.watch(&list_params, "0").await?.boxed();
-        while let Some(pod_status) = stream.try_next().await? {
-            match pod_status {
-                | WatchEvent::Added(_)
-                | WatchEvent::Deleted(_) => {
-                    // Regardless of the event, we need to re-sync the list of Pods and call
-                    // RecordChange on any added/removed values. We do this generically rather
-                    // than determining the IP that a Pod exists on, because multiple Pods can
-                    // exist on the same machine. If we were to indiscriminantly remove the IP
-                    // address, this could lead to moving from two Pods to one, but the IP still
-                    // being removed.
-                    let mut new_values = self.get_values(&meta).await?;
-                    new_values.sort();
-                    let (mut left_index, mut right_index) = (0, 0);
-                    loop {
-                        // Check if old_values differs from new_values. If new_values does not
-                        // contain the value at the current index, it was removed. If old_values
-                        // does not contain the value at the current index, it was added.
-                        // We do not have a guarantee that multiple addresses were not added at
-                        // once, and while I don't think it's possible, better safe than sorry.
-                        let ip_left = current_values.get(left_index);
-                        let ip_right = new_values.get(right_index);
-                        let ev = match (ip_left, ip_right) {
-                            (None, None) => {
-                                break
-                            },
-                            (Some(left), None) => {
-                                // Old value exists, new value does not. Increment left
-                                // index and delete record.
-                                left_index += 1;
-                                Some(RecordChange::Remove(left))
-                            },
-                            (None, Some(right)) => {
-                                // New value exists, old value does not. Increment right
-                                // index and add record.
-                                Some(RecordChange::Add(right))
-                            },
-                            (Some(left), Some(right)) => {
-                                // If the value at the left is less than the value at the right,
-                                // that means that when sorted, a similar value on the right was
-                                // not found. Similarly, if a value at the left is greater than the
-                                // value at the right, a similar value on the left was not found.
-                                // Because the values on the left are "old" records, matching
-                                // values on the right not being found means that those records
-                                // should be removed. Because the values on the right are "new"
-                                // records, matching values on the left not being found means that
-                                // those records should be created.
-                                if left < right {
-                                    // See above; old exists, new doesn't
-                                    left_index += 1;
-                                    Some(RecordChange::Remove(left))
-                                } else if left > right {
-                                    // See above; new exists, old doesn't
-                                    right_index += 1;
-                                    Some(RecordChange::Add(right))
-                                } else {
-                                    // Both indexes are the same. Increment each index by one, and
-                                    // do not produce an event.
-                                    left_index += 1;
-                                    right_index += 1;
-                                    None
+        let mut pod_watcher = pods.watch(&list_params, "0").await?.boxed().fuse();
+
+        loop {
+            #[derive(Debug)]
+            enum Event {
+                Pod(WatchEvent<Pod>),
+                Record(WatchEvent<Record>),
+            }
+
+            let event: Event = select! {
+                pod_status_result = pod_watcher.try_next() => {
+                    Event::Pod(match pod_status_result {
+                        Ok(v) => match v {
+                            Some(v) => v,
+                            None => return Err(anyhow!("Found None")),
+                        },
+                        Err(e) => return Err(e.into()),
+                    })
+                },
+                record_status_result = record_watcher.try_next() => {
+                    Event::Record(match record_status_result {
+                        Ok(v) => match v {
+                            Some(v) => v,
+                            None => return Err(anyhow!("Found None")),
+                        },
+                        Err(e) => return Err(e.into()),
+                    })
+                },
+            };
+
+            match event {
+                Event::Pod(pod_status) => {
+                    match pod_status {
+                        | WatchEvent::Added(_)
+                        | WatchEvent::Deleted(_) => {
+                            // Regardless of the event, we need to re-sync the list of Pods and
+                            // call RecordChange on any added/removed values. We do this
+                            // generically rather than determining the IP that a Pod exists on,
+                            // because multiple Pods can exist on the same machine. If we were to
+                            // indiscriminantly remove the IP address, this could lead to moving
+                            // from two Pods to one, but the IP still being removed.
+                            let mut new_values = self.get_values(&meta).await?;
+                            new_values.sort();
+                            let (mut left_index, mut right_index) = (0, 0);
+                            loop {
+                                // Check if old_values differs from new_values. If new_values
+                                // does not contain the value at the current index, it was removed.
+                                // If old_values does not contain the value at the current index,
+                                // it was added.  We do not have a guarantee that multiple
+                                // addresses were not added at once, and while I don't think it's
+                                // possible, better safe than sorry.
+                                let ip_left = current_values.get(left_index);
+                                let ip_right = new_values.get(right_index);
+                                let ev = match (ip_left, ip_right) {
+                                    (None, None) => {
+                                        break
+                                    },
+                                    (Some(left), None) => {
+                                        // Old value exists, new value does not. Increment left
+                                        // index and delete record.
+                                        left_index += 1;
+                                        Some(RecordChange::Remove(left))
+                                    },
+                                    (None, Some(right)) => {
+                                        // New value exists, old value does not. Increment right
+                                        // index and add record.
+                                        Some(RecordChange::Add(right))
+                                    },
+                                    (Some(left), Some(right)) => {
+                                        // If the value at the left is less than the value at the
+                                        // right, that means that when sorted, a similar value on
+                                        // the right was not found. Similarly, if a value at the
+                                        // left is greater than the value at the right, a similar
+                                        // value on the left was not found.  Because the values
+                                        // on the left are "old" records, matching values on the
+                                        // right not being found means that those records should
+                                        // be removed. Because the values on the right are "new"
+                                        // records, matching values on the left not being found
+                                        // means that those records should be created.
+                                        if left < right {
+                                            // See above; old exists, new doesn't
+                                            left_index += 1;
+                                            Some(RecordChange::Remove(left))
+                                        } else if left > right {
+                                            // See above; new exists, old doesn't
+                                            right_index += 1;
+                                            Some(RecordChange::Add(right))
+                                        } else {
+                                            // Both indexes are the same. Increment each index by one, and
+                                            // do not produce an event.
+                                            left_index += 1;
+                                            right_index += 1;
+                                            None
+                                        }
+                                    }
+                                }; // let ev
+                                if let Some(event) = ev {
+                                    // pass
+                                    let provider: &dyn ProviderBackend = provider_config.deref();
+                                    match event {
+                                        RecordChange::Add(value) => {
+                                            let new_value = value.clone();
+                                            let record = record_builder
+                                                .clone()
+                                                .value(new_value)
+                                                .ttl(1) // ::TODO:: custom TTL
+                                                .try_build()?;
+                                            provider.add_record(&record.zone, &record).await?;
+                                        },
+                                        RecordChange::Remove(value) => {
+                                            let new_value = value.clone();
+                                            let record = record_builder
+                                                .clone()
+                                                .value(new_value)
+                                                .ttl(1) // ::TODO:: custom TTL
+                                                .try_build()?;
+                                            provider.delete_record(&record.zone, &record).await?;
+                                        }
+                                    }
                                 }
                             }
-                        }; // let ev
-                        if let Some(event) = ev {
-                            // pass
-                            let provider: &dyn ProviderBackend = provider_config.deref();
-                            match event {
-                                RecordChange::Add(value) => {
-                                    let new_value = value.clone();
-                                    let record = record_builder
-                                        .clone()
-                                        .value(new_value)
-                                        .ttl(1) // ::TODO:: custom TTL
-                                        .try_build()?;
-                                    provider.add_record(&record.zone, &record).await?;
-                                },
-                                RecordChange::Remove(value) => {
-                                    let new_value = value.clone();
-                                    let record = record_builder
-                                        .clone()
-                                        .value(new_value)
-                                        .ttl(1) // ::TODO:: custom TTL
-                                        .try_build()?;
-                                    provider.delete_record(&record.zone, &record).await?;
-                                }
-                            }
-                        }
+                            current_values = new_values;
+                        },
+                        | WatchEvent::Modified(_)
+                        | WatchEvent::Bookmark(_) => {
+                            // Do nothing. Pods being Modified can't change Nodes.
+                        },
+                        WatchEvent::Error(e) => {
+                            // We got an error when watching. While this shouldn't happen often,
+                            // it should be bubbled up and handled by the controller, which will
+                            // then restart the watcher.
+                            return Err(e.into())
+                        },
                     }
-                    current_values = new_values;
                 },
-                | WatchEvent::Modified(_)
-                | WatchEvent::Bookmark(_) => {
-                    // Do nothing. Pods being Modified can't change Nodes. I  don't even think
-                    // Pods /can/ be Modified.
+                Event::Record(record_status) => {
+                    match record_status {
+                        | WatchEvent::Added(_)
+                        | WatchEvent::Bookmark(_) => {
+                            // do nothing
+                        },
+                        | WatchEvent::Modified(_)
+                        | WatchEvent::Deleted(_) => {
+                            let record = records.get(record_name.as_ref()).await;
+                            if let Ok(record) = records.get(record_name.as_ref()).await {
+                                return Ok(record) // cycle refresh
+                            }
+                        },
+                        WatchEvent::Error(e) => {
+                            return Err(e.into())
+                        },
+                    }
                 },
-                WatchEvent::Error(e) => {
-                    // We got an error when watching. While this shouldn't happen often, it should
-                    // be bubbled up and handled by the controller, which will then restart the
-                    // watcher.
-                    return Err(e.into())
-                }
             }
         }
-        Err(anyhow!("For some reason, we're not watching over Pods anymore."))
+
+        records.get(record_name.as_ref()).await.map_err(|x| x.into()) // cycle refresh
     }
 }
 
