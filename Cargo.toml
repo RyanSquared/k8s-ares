@@ -1,6 +1,6 @@
 [package]
 name = "k8s-ares"
-version = "0.0.1"
+version = "0.1.0"
 authors = ["RyanSquared <ryan@hashbang.sh>"]
 edition = "2018"
 license-file = "LICENSE"
