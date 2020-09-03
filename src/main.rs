@@ -36,11 +36,12 @@
 //! metadata:
 //!   name: ares-secret
 //! stringData:
-//! - selector:
-//!   - syntixi.io
-//!   provider: cloudflare
-//!   providerOptions:
-//!     apiToken: ***
+//!   ares.yaml: |-
+//!     - selector:
+//!       - syntixi.io
+//!       provider: cloudflare
+//!       providerOptions:
+//!         apiToken: ***
 //! ```
 //!
 //! If you want to control multiple domain zones across multiple different

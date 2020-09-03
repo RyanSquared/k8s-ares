@@ -29,11 +29,12 @@ kind: Secret
 metadata:
   name: ares-secret
 stringData:
-- selector:
-  - syntixi.io
-  provider: cloudflare
-  providerOptions:
-    apiToken: ***
+  ares.yaml: |-
+    - selector:
+      - syntixi.io
+      provider: cloudflare
+      providerOptions:
+        apiToken: ***
 ```
 
 If you want to control multiple domain zones across multiple different
@@ -100,5 +101,3 @@ When a syntixi.io/v1alpha1/Record resource is created, an additional record
 is made for ARES to track ownership over the DNS record. So long as that
 tracking record exists, when the Kubernetes resource is deleted, the
 corresponding record and tracking record will be deleted.
-
-License: MIT
