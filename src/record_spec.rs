@@ -373,15 +373,27 @@ impl RecordValueCollector for PodSelector {
                 },
                 Event::Record(record_status) => {
                     match record_status {
-                        | WatchEvent::Added(_)
+                        WatchEvent::Added(new) => {
+                            // verify that live record matches the current record
+                            if new.metadata.uid == meta.uid {
+                                if (new.metadata.resource_version != meta.resource_version) {
+                                    // The record was deleted in-between starting watch_values
+                                    // and starting the actual watcher.
+                                    return Ok(new)
+                                }
+                            }
+                        },
                         | WatchEvent::Bookmark(_) => {
                             // do nothing
                         },
-                        | WatchEvent::Modified(_)
-                        | WatchEvent::Deleted(_) => {
-                            let record = records.get(record_name.as_ref()).await;
-                            if let Ok(record) = records.get(record_name.as_ref()).await {
-                                return Ok(record) // cycle refresh
+                        WatchEvent::Modified(modified) => {
+                            if modified.metadata.uid == meta.uid {
+                                return Ok(modified)
+                            }
+                        },
+                        WatchEvent::Deleted(deleted) => {
+                            if deleted.metadata.uid == meta.uid {
+                                return Err(anyhow!("Record deleted"));
                             }
                         },
                         WatchEvent::Error(e) => {
