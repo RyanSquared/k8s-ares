@@ -251,8 +251,10 @@ async fn main() -> Result<()> {
         }
     }
 
+    let secret_logger = root_logger.new(o!());
     handles.push(tokio::spawn(async move {
         loop {
+            info!(secret_logger, "Watching over Secrets to detect configuration changes");
             let mut secret_watcher = secrets
                 .watch(&ListParams::default(), "0")
                 .await
@@ -263,19 +265,20 @@ async fn main() -> Result<()> {
                 match secret_status {
                     WatchEvent::Modified(modified) => {
                         if modified.metadata.uid == secret.metadata.uid {
-                            info!(root_logger, "Found config change, terminating");
+                            info!(secret_logger, "Found config change, terminating");
                             std::process::exit(0);
                         }
                     },
                     WatchEvent::Deleted(deleted) => {
                         if deleted.metadata.uid == secret.metadata.uid {
-                            info!(root_logger, "Found config change, terminating");
+                            info!(secret_logger, "Found config change, terminating");
                             std::process::exit(0);
                         }
                     },
                     _ => {},
                 }
             }
+            info!(secret_logger, "Restarting Secret watcher");
         }
     }));
 
