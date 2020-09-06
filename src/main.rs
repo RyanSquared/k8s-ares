@@ -123,10 +123,13 @@ use slog::{
 
 use anyhow::{anyhow, Result};
 
-use futures::{StreamExt, TryStreamExt};
+use futures::{
+    StreamExt, TryStreamExt, select,
+    future::{Future, Fuse, join_all},
+};
 use k8s_openapi::api::core::v1::{Event, Secret};
 use kube::{
-    api::{Api, ListParams, Meta},
+    api::{Api, ListParams, Meta, WatchEvent},
     Client,
 };
 use kube_runtime::{utils::try_flatten_applied, watcher};
@@ -165,6 +168,7 @@ async fn main() -> Result<()> {
     let secret = secrets.get(opts.secret.as_str()).await?;
     let config_data = secret
         .data
+        .as_ref()
         .ok_or(anyhow!("Unable to get data from Secret"))?;
     let config_content = config_data
         .get(opts.secret_key.as_str())
@@ -247,7 +251,31 @@ async fn main() -> Result<()> {
         }
     }
 
-    futures::future::join_all(handles).await;
+    handles.push(tokio::spawn(async move {
+        let mut secret_watcher = secrets
+            .watch(&ListParams::default(), "0")
+            .await
+            .unwrap()
+            .boxed();
+        while let Some(secret_status) = secret_watcher.try_next().await.unwrap() {
+            // If the configuration changes, trigger a panic which will cause a restart.
+            match secret_status {
+                WatchEvent::Modified(modified) => {
+                    if modified.metadata.uid == secret.metadata.uid {
+                        unimplemented!("restarting");
+                    }
+                },
+                WatchEvent::Deleted(deleted) => {
+                    if deleted.metadata.uid == secret.metadata.uid {
+                        unimplemented!("restarting");
+                    }
+                },
+                _ => {},
+            }
+        }
+    }));
+
+    join_all(handles).await;
 
     Ok(())
 }
