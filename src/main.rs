@@ -262,12 +262,14 @@ async fn main() -> Result<()> {
             match secret_status {
                 WatchEvent::Modified(modified) => {
                     if modified.metadata.uid == secret.metadata.uid {
-                        unimplemented!("restarting");
+                        info!(root_logger, "Found config change, terminating");
+                        std::process::exit(0);
                     }
                 },
                 WatchEvent::Deleted(deleted) => {
                     if deleted.metadata.uid == secret.metadata.uid {
-                        unimplemented!("restarting");
+                        info!(root_logger, "Found config change, terminating");
+                        std::process::exit(0);
                     }
                 },
                 _ => {},
