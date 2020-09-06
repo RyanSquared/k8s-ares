@@ -252,27 +252,29 @@ async fn main() -> Result<()> {
     }
 
     handles.push(tokio::spawn(async move {
-        let mut secret_watcher = secrets
-            .watch(&ListParams::default(), "0")
-            .await
-            .unwrap()
-            .boxed();
-        while let Some(secret_status) = secret_watcher.try_next().await.unwrap() {
-            // If the configuration changes, trigger a panic which will cause a restart.
-            match secret_status {
-                WatchEvent::Modified(modified) => {
-                    if modified.metadata.uid == secret.metadata.uid {
-                        info!(root_logger, "Found config change, terminating");
-                        std::process::exit(0);
-                    }
-                },
-                WatchEvent::Deleted(deleted) => {
-                    if deleted.metadata.uid == secret.metadata.uid {
-                        info!(root_logger, "Found config change, terminating");
-                        std::process::exit(0);
-                    }
-                },
-                _ => {},
+        loop {
+            let mut secret_watcher = secrets
+                .watch(&ListParams::default(), "0")
+                .await
+                .unwrap()
+                .boxed();
+            while let Ok(Some(secret_status)) = secret_watcher.try_next().await {
+                // If the configuration changes, trigger a panic which will cause a restart.
+                match secret_status {
+                    WatchEvent::Modified(modified) => {
+                        if modified.metadata.uid == secret.metadata.uid {
+                            info!(root_logger, "Found config change, terminating");
+                            std::process::exit(0);
+                        }
+                    },
+                    WatchEvent::Deleted(deleted) => {
+                        if deleted.metadata.uid == secret.metadata.uid {
+                            info!(root_logger, "Found config change, terminating");
+                            std::process::exit(0);
+                        }
+                    },
+                    _ => {},
+                }
             }
         }
     }));
